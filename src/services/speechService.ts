@@ -14,8 +14,17 @@ export interface SpeechServiceCallbacks {
 	onListeningChange?: (isListening: boolean) => void
 }
 
+export interface SpeechRecognitionHandlers {
+	onFinalResult?: (text: string) => void
+	onInterimResult?: (text: string) => void
+	onError?: (error: SpeechServiceError) => void
+	onStart?: () => void
+	onEnd?: () => void
+}
+
 interface SpeechRecognitionEventLike extends Event {
 	results: SpeechRecognitionResultListLike
+	resultIndex: number
 }
 
 interface SpeechRecognitionResultListLike {
@@ -43,6 +52,12 @@ interface SpeechRecognitionLike {
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 
+export interface SpeechRecognitionController {
+	startListening: () => Promise<void>
+	stopListening: () => void
+	destroy: () => void
+}
+
 const getRecognitionConstructor = (): SpeechRecognitionConstructor | undefined => {
 	const browserWindow = window as typeof window & {
 		SpeechRecognition?: SpeechRecognitionConstructor
@@ -56,6 +71,10 @@ export const isSpeechRecognitionSupported = (): boolean =>
 	typeof window !== 'undefined' && Boolean(getRecognitionConstructor())
 
 export const requestMicrophonePermission = async (): Promise<MediaStream> => {
+	if (typeof navigator === 'undefined') {
+		throw new Error('Microphone access is not available outside a browser.')
+	}
+
 	if (!navigator.mediaDevices?.getUserMedia) {
 		throw new Error('Microphone access is not supported by this browser.')
 	}
@@ -67,6 +86,26 @@ export const requestMicrophonePermission = async (): Promise<MediaStream> => {
 			throw new Error('Microphone permission was denied.')
 		}
 		throw error
+	}
+}
+
+export const createSpeechRecognition = (
+	handlers: SpeechRecognitionHandlers = {},
+): SpeechRecognitionController => {
+	const service = new SpeechRecognitionService({
+		onFinalTranscript: handlers.onFinalResult,
+		onInterimTranscript: handlers.onInterimResult,
+		onError: handlers.onError,
+		onListeningChange: (isListening) => {
+			if (isListening) handlers.onStart?.()
+			else handlers.onEnd?.()
+		},
+	})
+
+	return {
+		startListening: () => service.start(),
+		stopListening: () => service.stop(),
+		destroy: () => service.destroy(),
 	}
 }
 
@@ -140,7 +179,7 @@ export class SpeechRecognitionService {
 			let interim = ''
 			let finalText = ''
 
-			for (let index = 0; index < event.results.length; index += 1) {
+			for (let index = event.resultIndex; index < event.results.length; index += 1) {
 				const result = event.results[index]
 				if (result.isFinal) finalText += result[0].transcript
 				else interim += result[0].transcript
