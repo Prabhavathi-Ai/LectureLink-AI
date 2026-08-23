@@ -30,6 +30,10 @@ export function useSpeechRecognition(): SpeechRecognitionState {
       onInterimTranscript: setInterimTranscript,
       onFinalTranscript: (text) => {
         const normalizedText = text.trim()
+        console.log('TRANSCRIPT FINAL CALLBACK:', {
+          fired: true,
+          transcriptLength: normalizedText.length,
+        })
         if (!normalizedText || normalizedText === lastFinalResultRef.current) return
 
         lastFinalResultRef.current = normalizedText

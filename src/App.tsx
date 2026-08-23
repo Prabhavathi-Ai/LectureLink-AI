@@ -1,5 +1,9 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, useRef, type FormEvent, type ReactNode } from "react";
 import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
+import { signIn, signOut, type AuthenticatedUser } from "./services/authService";
+import { getSupabaseClient } from "./lib/supabase";
+import { createSession, endSession, getActiveSessions, getEndedSessions, getSessionById, type LectureSessionRecord } from "./services/sessionService";
+import { getTranscriptEntries, saveTranscriptEntry, type TranscriptRow } from "./services/transcriptService";
 import "./App.css";
 
 type Page = "login" | "faculty" | "student" | "live" | "notes";
@@ -11,40 +15,30 @@ interface Lecture {
   faculty: string;
   sessionId: string;
 }
-interface TranscriptEntry {
-  time: string;
-  text: string;
-  important?: boolean;
-}
 
-const activeLecture: Lecture = {
-  title: "Differential Calculus",
-  subject: "Mathematics",
-  faculty: "Dr. Priya Sharma",
-  sessionId: "LL-2048",
+const emptyLecture: Lecture = {
+  title: "",
+  subject: "",
+  faculty: "",
+  sessionId: "",
 };
-const transcript: TranscriptEntry[] = [
-  { time: "10:30 AM", text: "Today we will discuss derivatives." },
-  { time: "10:31 AM", text: "A derivative represents the rate of change." },
-  {
-    time: "10:32 AM",
-    text: "Note this carefully: the power rule is fundamental.",
-    important: true,
-  },
-  {
-    time: "10:33 AM",
-    text: "Remember this formula for your examination.",
-    important: true,
-  },
-];
+
+const getTimestampLabel = () =>
+  new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>("login");
   const [role, setRole] = useState<Role | null>(null);
-  const [lecture, setLecture] = useState<Lecture>(activeLecture);
-  const logout = () => {
-    setRole(null);
-    setCurrentPage("login");
+  const [authenticatedUser, setAuthenticatedUser] = useState<AuthenticatedUser | null>(null);
+  const [lecture, setLecture] = useState<Lecture>(emptyLecture);
+  const logout = async () => {
+    try {
+      await signOut();
+    } finally {
+      setAuthenticatedUser(null);
+      setRole(null);
+      setCurrentPage("login");
+    }
   };
   const openLiveSession = (nextLecture: Lecture = lecture) => {
     setLecture(nextLecture);
@@ -77,17 +71,37 @@ function App() {
       <main className="page-content">
         {currentPage === "login" && (
           <LoginPage
-            onLogin={(selectedRole) => {
+            onLogin={(selectedRole, user) => {
+              setAuthenticatedUser(user);
               setRole(selectedRole);
               setCurrentPage(selectedRole);
             }}
           />
         )}
         {currentPage === "faculty" && (
-          <FacultyDashboard lecture={lecture} onStart={openLiveSession} />
+          <FacultyDashboard lecture={lecture} facultyId={authenticatedUser?.id} onStart={openLiveSession} />
         )}
         {currentPage === "student" && (
-          <StudentDashboard onJoin={() => openLiveSession(activeLecture)} />
+          <StudentDashboard
+            onJoin={(session) => {
+              setLecture({
+                title: session.title,
+                subject: session.subject,
+                faculty: session.faculty_id,
+                sessionId: session.id,
+              });
+              setCurrentPage("live");
+            }}
+            onViewNotes={(session) => {
+              setLecture({
+                title: session.title,
+                subject: session.subject,
+                faculty: session.faculty_id,
+                sessionId: session.id,
+              });
+              setCurrentPage("notes");
+            }}
+          />
         )}
         {currentPage === "live" && (
           <LiveSessionPage
@@ -106,13 +120,13 @@ function App() {
   );
 }
 
-function LoginPage({ onLogin }: { onLogin: (role: Role) => void }) {
+function LoginPage({ onLogin }: { onLogin: (role: Role, user: AuthenticatedUser) => void }) {
   const [domainId, setDomainId] = useState("");
   const [password, setPassword] = useState("");
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!domainId.trim() || !password.trim() || !selectedRole) {
       setError(
@@ -122,10 +136,14 @@ function LoginPage({ onLogin }: { onLogin: (role: Role) => void }) {
     }
     setError("");
     setLoading(true);
-    window.setTimeout(() => {
+    try {
+      const user = await signIn(domainId, password);
       setLoading(false);
-      onLogin(selectedRole);
-    }, 400);
+      onLogin(selectedRole, user);
+    } catch (caughtError) {
+      setLoading(false);
+      setError(caughtError instanceof Error ? caughtError.message : "Unable to sign in.");
+    }
   };
   return (
     <section className="login-layout">
@@ -258,25 +276,48 @@ function PageHeader({
 
 function FacultyDashboard({
   lecture,
+  facultyId,
   onStart,
 }: {
   lecture: Lecture;
+  facultyId?: string;
   onStart: (lecture: Lecture) => void;
 }) {
   const [title, setTitle] = useState("");
   const [subject, setSubject] = useState("");
   const [error, setError] = useState("");
-  const start = () => {
+  const [isStarting, setIsStarting] = useState(false);
+
+  const start = async () => {
     if (!title.trim()) {
       setError("Add a lecture title before starting.");
       return;
     }
-    onStart({
-      ...lecture,
-      title: title.trim(),
-      subject: subject.trim() || "General Lecture",
-      sessionId: `LL-${Math.floor(1000 + Math.random() * 9000)}`,
-    });
+
+    setError("");
+    setIsStarting(true);
+
+    try {
+      if (!facultyId) {
+        throw new Error("Your authenticated faculty session is missing. Please sign in again.");
+      }
+      const session = await createSession(title.trim(), subject.trim() || "General Lecture", facultyId);
+      console.log("SESSION CREATED:", {
+        returnedSessionId: session.id,
+        storedSessionId: session.id,
+      });
+      onStart({
+        ...lecture,
+        title: title.trim(),
+        subject: subject.trim() || "General Lecture",
+        faculty: lecture.faculty || "Faculty",
+        sessionId: session.id,
+      });
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Unable to create the lecture session.");
+    } finally {
+      setIsStarting(false);
+    }
   };
   return (
     <section className="dashboard-page">
@@ -295,7 +336,7 @@ function FacultyDashboard({
             <input
               value={title}
               onChange={(event) => setTitle(event.target.value)}
-              placeholder="e.g. Introduction to derivatives"
+              placeholder="Enter the lecture title"
             />
           </label>
           <label>
@@ -307,8 +348,8 @@ function FacultyDashboard({
             />
           </label>
           {error && <p className="form-error">{error}</p>}
-          <button className="primary-button" type="button" onClick={start}>
-            Start live lecture <span>↗</span>
+          <button className="primary-button" type="button" onClick={() => void start()} disabled={isStarting}>
+            {isStarting ? "Starting lecture..." : "Start live lecture"} <span>↗</span>
           </button>
         </div>
         <div className="panel status-panel">
@@ -357,70 +398,99 @@ function FacultyDashboard({
   );
 }
 
-function StudentDashboard({ onJoin }: { onJoin: () => void }) {
+function StudentDashboard({
+  onJoin,
+  onViewNotes,
+}: {
+  onJoin: (session: LectureSessionRecord) => void;
+  onViewNotes: (session: LectureSessionRecord) => void;
+}) {
+  const [activeSessions, setActiveSessions] = useState<LectureSessionRecord[]>([]);
+  const [endedSessions, setEndedSessions] = useState<LectureSessionRecord[]>([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadSessions = async () => {
+      try {
+        const [active, ended] = await Promise.all([getActiveSessions(), getEndedSessions()]);
+        if (!isCancelled) {
+          setActiveSessions(active);
+          setEndedSessions(ended);
+        }
+      } catch (caughtError) {
+        if (!isCancelled) {
+          setError(caughtError instanceof Error ? caughtError.message : "Unable to load lectures.");
+        }
+      }
+    };
+
+    void loadSessions();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
   return (
     <section className="dashboard-page">
       <PageHeader
         eyebrow="STUDENT DASHBOARD"
-        title="Good morning, Alex."
-        description="Pick up where you left off or join a lecture in progress."
+        title="Student classroom"
+        description="Join active lectures and revisit completed sessions."
       />
       <div className="section-heading active-heading">
         <div>
           <p className="eyebrow coral-text">HAPPENING NOW</p>
           <h2>Active live lectures</h2>
         </div>
-        <span className="live-count">
-          <i /> 1 session live
-        </span>
       </div>
-      <div className="lecture-card">
-        <div className="lecture-card-main">
-          <div className="live-banner">
-            <span className="status-dot live-dot">LIVE NOW</span>
-            <span>Started 18 min ago</span>
-          </div>
-          <h2>{activeLecture.title}</h2>
-          <p>
-            {activeLecture.subject} <span>·</span> {activeLecture.faculty}
-          </p>
-          <div className="attendee-row">
-            <div className="avatars">
-              <span>J</span>
-              <span>M</span>
-              <span>R</span>
-              <b>+24</b>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {activeSessions.length > 0 ? activeSessions.map((session) => (
+        <div className="lecture-card" key={session.id}>
+          <div className="lecture-card-main">
+            <div className="live-banner">
+              <span className="status-dot live-dot">ACTIVE</span>
+              <span>Session {session.id}</span>
             </div>
-            <span>25 students learning together</span>
+            <h2>{session.title}</h2>
+            <p>{session.subject} <span>·</span> Faculty {session.faculty_id}</p>
+          </div>
+          <button className="primary-button" type="button" onClick={() => onJoin(session)}>
+            Join lecture <span>→</span>
+          </button>
+        </div>
+      )) : (
+        <div className="lecture-card">
+          <div className="lecture-card-main">
+            <h2>No active lecture</h2>
+            <p>There are currently no live sessions available.</p>
           </div>
         </div>
-        <button className="primary-button" type="button" onClick={onJoin}>
-          Join session <span>→</span>
-        </button>
-      </div>
+      )}
       <div className="section-heading notes-heading">
         <div>
           <p className="eyebrow">YOUR LIBRARY</p>
           <h2>Previous notes</h2>
         </div>
-        <button className="text-button" type="button">
-          View all →
-        </button>
       </div>
       <div className="recent-list">
-        <div className="recent-item">
-          <span className="date-badge blue">
-            12
-            <br />
-            <small>MAR</small>
-          </span>
-          <div>
-            <strong>Limits and Continuity</strong>
-            <p>Mathematics · 38 minutes</p>
+        {endedSessions.length > 0 ? endedSessions.map((session) => (
+          <div className="recent-item" key={session.id}>
+            <span className="date-badge blue">✓</span>
+            <div>
+              <strong>{session.title}</strong>
+              <p>{session.subject} · {session.id}</p>
+            </div>
+            <span className="muted">Completed</span>
+            <button className="text-button" type="button" onClick={() => onViewNotes(session)}>View notes →</button>
           </div>
-          <span className="muted">Viewed yesterday</span>
-          <span className="arrow">→</span>
-        </div>
+        )) : (
+          <div className="recent-item">
+            <div><strong>No previous lectures</strong><p>Completed sessions will appear here.</p></div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -440,19 +510,181 @@ function LiveSessionPage({
   onEnd: () => void;
 }) {
   const [isSpeaking, setIsSpeaking] = useState(true);
+  const [sessionError, setSessionError] = useState("");
+  const [studentTranscript, setStudentTranscript] = useState<TranscriptRow[]>([]);
+  const [isEnded, setIsEnded] = useState(false);
   const speech = useSpeechRecognition();
+  const savedFinalLinesRef = useRef<Set<string>>(new Set());
+  const pendingTranscriptWritesRef = useRef<Map<string, Promise<void>>>(new Map());
+
+  const persistFinalLine = (line: string) => {
+    if (!lecture.sessionId || savedFinalLinesRef.current.has(line)) return Promise.resolve();
+
+    const pendingWrite = pendingTranscriptWritesRef.current.get(line);
+    if (pendingWrite) return pendingWrite;
+
+    const write = saveTranscriptEntry(lecture.sessionId, line, true)
+      .then(() => {
+        savedFinalLinesRef.current.add(line);
+      })
+      .finally(() => {
+        pendingTranscriptWritesRef.current.delete(line);
+      });
+
+    pendingTranscriptWritesRef.current.set(line, write);
+    return write;
+  };
+
+  const saveFinalTranscriptLines = async () => {
+    if (!lecture.sessionId || role !== "faculty") return;
+
+    const lines = speech.transcript
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    console.log("END LECTURE FLUSH:", {
+      sessionId: lecture.sessionId ? "present" : "absent",
+      transcriptLines: lines.length,
+    });
+
+    await Promise.all(lines.map((line) => persistFinalLine(line)));
+  };
+
   const spokenEntries = speech.transcript
     .split("\n")
     .filter(Boolean)
     .map((text: string, index: number) => ({
-      time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      time: getTimestampLabel(),
       text,
-      important: /note this|important|very important|remember this|exam point|key point/i.test(text),
+      important: /note this|important|very important|remember this|exam point|key point|examination|exam/i.test(text),
       key: `spoken-${index}-${text}`,
     }));
   const displayedTranscript = role === "faculty"
-    ? [...transcript, ...spokenEntries]
-    : transcript;
+    ? spokenEntries
+    : studentTranscript.map((entry) => ({
+      time: new Date(entry.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      text: entry.text,
+      important: entry.is_important,
+      key: entry.id,
+    }));
+
+  useEffect(() => {
+    if (!lecture.sessionId || role !== "student") return;
+
+    let isCancelled = false;
+    const supabase = getSupabaseClient();
+    const channel = supabase.channel(`student-session:${lecture.sessionId}`);
+
+    const loadStudentSession = async () => {
+      try {
+        const [entries, session] = await Promise.all([
+          getTranscriptEntries(lecture.sessionId),
+          getSessionById(lecture.sessionId),
+        ]);
+        if (isCancelled) return;
+
+        setStudentTranscript((current) => {
+          const merged = new Map(current.map((entry) => [entry.id, entry]));
+          entries.forEach((entry) => merged.set(entry.id, entry));
+          return [...merged.values()].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+        });
+        setIsEnded(session?.status === "ended");
+      } catch (caughtError) {
+        if (!isCancelled) {
+          setSessionError(caughtError instanceof Error ? caughtError.message : "Unable to load the lecture transcript.");
+        }
+      }
+    };
+
+    channel
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "transcript_entries",
+          filter: `session_id=eq.${lecture.sessionId}`,
+        },
+        (payload) => {
+          const entry = payload.new as TranscriptRow;
+          if (entry.is_final) {
+            setStudentTranscript((current) => current.some((item) => item.id === entry.id) ? current : [...current, entry]);
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "sessions",
+          filter: `id=eq.${lecture.sessionId}`,
+        },
+        (payload) => {
+          const session = payload.new as LectureSessionRecord;
+          if (session.status === "ended") setIsEnded(true);
+        },
+      );
+
+    void loadStudentSession();
+    void channel.subscribe((status) => {
+      if (status === "CHANNEL_ERROR" && !isCancelled) {
+        setSessionError("Unable to subscribe to live transcript updates.");
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+      void supabase.removeChannel(channel);
+    };
+  }, [lecture.sessionId, role]);
+
+  useEffect(() => {
+    if (!lecture.sessionId || role !== "faculty") return;
+
+    const lines = speech.transcript
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    let isCancelled = false;
+
+    const persistSessionLines = async () => {
+      for (const line of lines) {
+        try {
+          await persistFinalLine(line);
+        } catch (caughtError) {
+          if (isCancelled) return;
+          const message = caughtError instanceof Error ? caughtError.message : "Unable to save transcript.";
+          setSessionError(message);
+        }
+      }
+    };
+
+    void persistSessionLines();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [lecture.sessionId, role, speech.transcript]);
+
+  const handleEndLecture = async () => {
+    if (!lecture.sessionId) {
+      onEnd();
+      return;
+    }
+
+    try {
+      speech.stopListening();
+      await saveFinalTranscriptLines();
+      await endSession(lecture.sessionId);
+      onEnd();
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : "Unable to end the lecture.";
+      setSessionError(message);
+    }
+  };
   return (
     <section className="session-page">
       <button className="back-button" type="button" onClick={onBack}>
@@ -461,7 +693,7 @@ function LiveSessionPage({
       <div className="session-heading">
         <div>
           <div className="session-kicker">
-            <span className="status-dot live-dot">LIVE</span>
+            <span className={`status-dot ${isEnded ? "ended-dot" : "live-dot"}`}>{isEnded ? "ENDED" : "LIVE"}</span>
             <span>Session {lecture.sessionId}</span>
           </div>
           <h1>{lecture.title}</h1>
@@ -471,7 +703,7 @@ function LiveSessionPage({
         </div>
         <div className="session-actions">
           {role === "faculty" && (
-            <button className="danger-button" type="button" onClick={onEnd}>
+            <button className="danger-button" type="button" onClick={() => void handleEndLecture()}>
               End lecture
             </button>
           )}
@@ -487,9 +719,7 @@ function LiveSessionPage({
               <p className="eyebrow">LIVE TRANSCRIPT</p>
               <h2>Follow along</h2>
             </div>
-            <span className="sync-label">
-              <i /> Syncing live
-            </span>
+            <span className="sync-label"><i /> {isEnded ? "Lecture ended" : "Syncing live"}</span>
           </div>
           {role === "faculty" && (
             <div className="speech-controls">
@@ -504,21 +734,28 @@ function LiveSessionPage({
           )}
           {role === "faculty" && !speech.isSupported && <p className="speech-error">Speech recognition is not supported in this browser.</p>}
           {role === "faculty" && speech.error && <p className="speech-error" role="alert">Speech recognition error: {speech.error}</p>}
+          {sessionError && <p className="speech-error" role="alert">{sessionError}</p>}
           <div className="transcript-list">
-            {displayedTranscript.map((entry) => (
-              <div
-                className={`transcript-entry ${entry.important ? "important-entry" : ""}`}
-                key={"key" in entry ? String(entry.key) : entry.time}
-              >
-                <time>{entry.time}</time>
-                <p>
-                  {entry.important && (
-                    <span className="important-label">IMPORTANT</span>
-                  )}
-                  {entry.text}
-                </p>
+            {displayedTranscript.length > 0 ? (
+              displayedTranscript.map((entry) => (
+                <div
+                  className={`transcript-entry ${entry.important ? "important-entry" : ""}`}
+                  key={String(entry.key)}
+                >
+                  <time>{entry.time}</time>
+                  <p>
+                    {entry.important && (
+                      <span className="important-label">IMPORTANT</span>
+                    )}
+                    {entry.text}
+                  </p>
+                </div>
+              ))
+            ) : (
+              <div className="transcript-entry">
+                <p>No transcript available for this lecture yet.</p>
               </div>
-            ))}
+            )}
           </div>
           <div className={`interim ${isSpeaking && (!speech.interimTranscript || role !== "faculty") ? "" : "paused"}`}>
             <span className="sound-bars">
@@ -537,14 +774,6 @@ function LiveSessionPage({
         <aside className="session-side">
           <div className="panel session-info">
             <p className="eyebrow">SESSION DETAILS</p>
-            <div className="detail">
-              <span>Duration</span>
-              <strong>00:18:42</strong>
-            </div>
-            <div className="detail">
-              <span>Students</span>
-              <strong>25 connected</strong>
-            </div>
             <div className="detail">
               <span>Language</span>
               <strong>English (US)</strong>
@@ -585,7 +814,7 @@ function NotesPage({
           </p>
           <h1>{lecture.title}</h1>
           <p className="page-description">
-            A clear study guide from your live lecture · 18 min lecture
+            A study guide from your live lecture.
           </p>
         </div>
         <div className="export-actions">
@@ -600,64 +829,23 @@ function NotesPage({
       <div className="notes-grid">
         <article className="notes-main">
           <NoteSection title="Lecture summary">
-            <p>
-              Today’s lecture introduced derivatives as a measure of
-              instantaneous rate of change. We explored the power rule and
-              practiced applying it to polynomial functions, with a focus on
-              recognizing the patterns that make differentiation quick and
-              reliable.
-            </p>
+            <p>No transcript available for this lecture yet.</p>
           </NoteSection>
           <NoteSection title="Structured notes">
-            <h3>Introduction</h3>
-            <ul>
-              <li>
-                Derivatives describe how a quantity changes at a specific
-                moment.
-              </li>
-              <li>
-                They are used to model motion, growth, and changing
-                relationships.
-              </li>
-            </ul>
-            <h3>Power Rule</h3>
-            <ul>
-              <li>
-                For <code>f(x) = xⁿ</code>, the derivative is{" "}
-                <code>f′(x) = n · xⁿ⁻¹</code>.
-              </li>
-              <li>
-                Multiply by the exponent, then reduce the exponent by one.
-              </li>
-            </ul>
+            <p>Generated notes will appear here once a live session transcript is saved and processed.</p>
           </NoteSection>
           <NoteSection title="Important points">
-            <ul className="highlight-list">
-              <li>Note this carefully: the power rule is fundamental.</li>
-              <li>Remember this formula for your examination.</li>
-            </ul>
+            <p>Important lecture points will appear here after transcript processing.</p>
           </NoteSection>
         </article>
         <aside className="notes-sidebar">
           <div className="notes-side-section">
             <p className="eyebrow">KEY CONCEPTS</p>
-            <div className="concept">
-              <strong>Derivative</strong>
-              <span>The instantaneous rate of change.</span>
-            </div>
-            <div className="concept">
-              <strong>Power rule</strong>
-              <span>A shortcut for differentiating powers.</span>
-            </div>
+            <p>No concepts available yet.</p>
           </div>
           <div className="notes-side-section">
             <p className="eyebrow">TEACHER HIGHLIGHTS</p>
-            <blockquote>
-              “Note this carefully: the power rule is fundamental.”
-            </blockquote>
-            <blockquote>
-              “Remember this formula for your examination.”
-            </blockquote>
+            <p>No highlights available yet.</p>
           </div>
         </aside>
       </div>
@@ -667,36 +855,8 @@ function NotesPage({
             <p className="eyebrow">LECTURE + READING</p>
             <h2>PDF comparison</h2>
           </div>
-          <span className="coverage-score">3 of 5 topics covered</span>
         </div>
-        <div className="comparison-table">
-          <div className="table-row table-head">
-            <span>Topic</span>
-            <span>PDF material</span>
-            <span>Lecture coverage</span>
-            <span>Status</span>
-          </div>
-          {[
-            ["Derivatives", "Yes", "Fully covered", "Covered"],
-            ["Power rule", "Yes", "Fully covered", "Covered"],
-            ["Chain rule", "Yes", "Partially covered", "Partial"],
-            ["Applications", "Yes", "Not covered", "Not covered"],
-            ["Extra example", "No", "Explained", "Additional"],
-          ].map(([topic, pdf, coverage, status]) => (
-            <div className="table-row" key={topic}>
-              <span>
-                <strong>{topic}</strong>
-              </span>
-              <span>{pdf}</span>
-              <span>{coverage}</span>
-              <span
-                className={`table-status ${status.toLowerCase().replace(" ", "-")}`}
-              >
-                {status}
-              </span>
-            </div>
-          ))}
-        </div>
+        <p>PDF comparison will be available when lecture material is uploaded.</p>
       </div>
     </section>
   );
