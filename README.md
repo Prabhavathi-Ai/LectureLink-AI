@@ -1,32 +1,119 @@
-# React + TypeScript + Vite
+LectureLink-AI 🎓
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+AI-Powered Classroom Lecture Transcription and Note Generation
 
-Currently, two official plugins are available:
+📌 Project Overview
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+LectureLink-AI is an AI-powered classroom assistant designed to help students capture lecture content, convert speech into text, and organize learning materials.
 
-## React Compiler
+The project aims to reduce the effort required to prepare lecture notes and make classroom learning more accessible and easier to review.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+🎯 Objectives
 
-## Expanding the Oxlint configuration
+- Convert lecture speech into text.
+- Display and review lecture transcripts.
+- Store and retrieve lecture data using a database.
+- Generate organized study notes from transcripts using AI.
+- Provide a simple and user-friendly interface.
+- Explore AI-assisted learning solutions for classrooms.
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+🛠️ Technology Stack
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
+- Frontend: React.js, TypeScript
+- Development Tool: Vite
+- Speech Recognition: Web Speech API, where supported
+- Database: Supabase
+- AI Integration: AI API for note generation, where configured
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+⚙️ System Workflow
+
+1. Start a lecture session.
+2. Capture audio using a supported microphone.
+3. Convert speech into text.
+4. Display the transcript for review.
+5. Store lecture data in the database.
+6. Generate AI-assisted notes from the transcript.
+7. Retrieve saved lecture materials when needed.
+
+The workflow represents the intended system design; individual features are being tested and improved.
+
+📂 Project Structure
+
+LectureLink-AI/
+├── client/
+│   ├── src/
+│   ├── public/
+│   ├── index.html
+│   └── package.json
+├── database/
+│   └── schema.sql
+├── README.md
+└── .gitignore
+
+💻 Installation and Setup
+
+Prerequisites
+
+- Node.js
+- npm
+- Git
+- Supabase account, if database features are required
+- Relevant AI API credentials, if applicable
+
+Clone the Repository
+
+git clone https://github.com/Prabhavathi-Ai/LectureLink-AI.git
+
+Navigate to the Project
+
+cd LectureLink-AI/client
+
+Install Dependencies
+
+npm install
+
+Start the Development Server
+
+npm run dev
+
+Open the local URL displayed in the terminal.
+
+These commands assume the repository uses the folder structure shown above.
+
+🔐 Environment Configuration
+
+Configure the required environment variables using the project's environment template, if available.
+
+- Configure Supabase credentials for database access.
+- Store private API keys securely on the server.
+- Never commit secret credentials to the repository.
+- Apply appropriate database access policies to protect lecture data.
+
+🚧 Development Status
+
+LectureLink-AI is currently in the prototype and improvement stage.
+
+Key areas being tested include:
+
+- Frontend usability.
+- Microphone access and speech recognition.
+- Transcript generation and storage.
+- Supabase database integration.
+- AI-assisted note generation.
+- Reliability with real lecture audio.
+
+Feature availability depends on the current implementation and testing results.
+
+🔮 Future Enhancements
+
+- Improved real-time transcription.
+- Better recognition of technical terminology.
+- Timestamped lecture transcripts.
+- Structured summaries and revision notes.
+- Exportable study materials.
+- Secure lecture management.
+- Multilingual transcription support.
+- Exploration of dedicated classroom audio hardware.
+---
+
+LectureLink-AI — Turning classroom lectures into organized learning resources.
