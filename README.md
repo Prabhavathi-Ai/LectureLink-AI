@@ -117,3 +117,4 @@ Feature availability depends on the current implementation and testing results.
 ---
 
 LectureLink-AI — Turning classroom lectures into organized learning resources.
+and future Enhancements are updating simultaneously
